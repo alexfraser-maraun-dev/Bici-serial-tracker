@@ -29,12 +29,15 @@ export async function GET(req: NextRequest) {
         i.manufacturer_sku, 
         i.description, 
         m.name AS brand,
-        vn.vendor_id AS vendor_id
+        vn.vendor_id AS vendor_id,
+        v.name AS vendor_name
       FROM \`bici-klaviyo-datasync.light_speed_retailne.item_history\` i
       LEFT JOIN \`bici-klaviyo-datasync.light_speed_retailne.manufacturer_history\` m 
         ON i.manufacturer_id = m.id
       LEFT JOIN \`bici-klaviyo-datasync.light_speed_retailne.item_vendor_num_history\` vn
         ON i.id = vn.item_id
+      LEFT JOIN \`bici-klaviyo-datasync.light_speed_retailne.vendor_history\` v
+        ON vn.vendor_id = v.id
       WHERE ${upc ? 'i.upc = @upc' : 'CAST(i.system_sku AS STRING) = @sku'}
       LIMIT 1
     `;
@@ -58,7 +61,8 @@ export async function GET(req: NextRequest) {
       manufacturer_sku: row.manufacturer_sku || '',
       product_description: row.description || '',
       brand: row.brand || '',
-      vendor_id: row.vendor_id ? String(row.vendor_id) : ''
+      vendor_id: row.vendor_id ? String(row.vendor_id) : '',
+      vendor_name: row.vendor_name || ''
     };
 
     return NextResponse.json({ found: true, product });
