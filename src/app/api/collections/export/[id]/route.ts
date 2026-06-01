@@ -27,7 +27,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
 
   // Generate CSV
-  const header = ['brand', 'vendor_id', 'product_description', 'serial_number', 'qty_sold', 'scanned_by', 'scanned_at'];
+  const columns = [
+    { key: 'brand', label: 'brand' },
+    { key: 'vendor_id', label: 'vendor ID' },
+    { key: 'product_description', label: 'product_description' },
+    { key: 'serial_number', label: 'serial_number' },
+    { key: 'qty_sold', label: 'qty_sold' },
+    { key: 'scanned_by', label: 'scanned_by' },
+    { key: 'scanned_at', label: 'scanned_at' },
+  ];
   
   const escapeCsv = (val: any) => {
     if (val === null || val === undefined) return '';
@@ -38,11 +46,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return str;
   };
 
+  const csvHeaders = columns.map(col => col.label).join(',');
   const rows = scans.map(scan => 
-    header.map(col => escapeCsv(scan[col as keyof typeof scan])).join(',')
+    columns.map(col => escapeCsv(scan[col.key as keyof typeof scan])).join(',')
   );
 
-  const csvContent = [header.join(','), ...rows].join('\n');
+  const csvContent = [csvHeaders, ...rows].join('\n');
 
   return new NextResponse(csvContent, {
     status: 200,
