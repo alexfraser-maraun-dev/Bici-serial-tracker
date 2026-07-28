@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState, useRef, use } from 'react';
-import { supabase } from '@/lib/supabase';
+import { ApiClientError, apiJson } from '@/lib/api-client';
+import { normalizeSerial } from '@/lib/matching';
+import type { CollectionRecord, SerialScanRecord } from '@/lib/types';
 import { useSession } from 'next-auth/react';
 import { CheckCircle2, AlertCircle, Clock, XCircle, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
@@ -15,20 +17,6 @@ type ScanRow = {
   timestamp: Date;
 };
 
-type MappingRule = {
-  id: string;
-  match_type: 'prefix' | 'contains' | 'regex' | 'exact';
-  match_value: string;
-  priority: number;
-  brand: string;
-  vendor_id: string;
-  vendor_name: string;
-  product_description: string;
-  upc: string;
-  system_sku: string;
-  manufacturer_sku: string;
-};
-
 export default function ScanPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const collectionId = resolvedParams.id;
@@ -36,71 +24,43 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   
   const [inputValue, setInputValue] = useState('');
   const [scans, setScans] = useState<ScanRow[]>([]);
-  const [rules, setRules] = useState<MappingRule[]>([]);
-  const [collection, setCollection] = useState<any>(null);
+  const [collection, setCollection] = useState<CollectionRecord | null>(null);
+  const [sessionScanCount, setSessionScanCount] = useState(0);
   
   // Session duplicates Set
   const sessionScans = useRef<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetchInitData();
+    let cancelled = false;
+
+    Promise.all([
+        apiJson<CollectionRecord>(
+          `/api/collections/${encodeURIComponent(collectionId)}`,
+        ),
+        apiJson<SerialScanRecord[]>(
+          `/api/scans?collectionId=${encodeURIComponent(collectionId)}`,
+        ),
+      ])
+      .then(([colData, existingScans]) => {
+        if (cancelled) return;
+        setCollection(colData);
+        existingScans.forEach(s =>
+          sessionScans.current.add(s.normalized_serial_number),
+        );
+        setSessionScanCount(sessionScans.current.size);
+      })
+      .catch(() => {
+        if (!cancelled) alert('Failed to load collection data.');
+      })
+      .finally(() => {
+        if (!cancelled) inputRef.current?.focus();
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [collectionId]);
-
-  const fetchInitData = async () => {
-    // Fetch collection info
-    const { data: colData } = await supabase.from('collections').select('*').eq('id', collectionId).single();
-    if (colData) setCollection(colData);
-
-    // Fetch active mapping rules
-    const { data: rulesData } = await supabase
-      .from('serial_mapping_rules')
-      .select('*')
-      .eq('active', true)
-      .order('priority', { ascending: false });
-    if (rulesData) setRules(rulesData);
-
-    // Preload session duplicates for this collection
-    const { data: existingScans } = await supabase
-      .from('serial_scans')
-      .select('normalized_serial_number')
-      .eq('collection_id', collectionId);
-    
-    if (existingScans) {
-      existingScans.forEach(s => sessionScans.current.add(s.normalized_serial_number));
-    }
-    
-    inputRef.current?.focus();
-  };
-
-  const normalizeSerial = (serial: string) => {
-    return serial.trim().replace(/\r?\n|\r/g, '');
-  };
-
-  const findMatchingRule = (normalized: string): MappingRule | null => {
-    for (const rule of rules) {
-      switch (rule.match_type) {
-        case 'exact':
-          if (normalized === rule.match_value) return rule;
-          break;
-        case 'prefix':
-          if (normalized.startsWith(rule.match_value)) return rule;
-          break;
-        case 'contains':
-          if (normalized.includes(rule.match_value)) return rule;
-          break;
-        case 'regex':
-          try {
-            const regex = new RegExp(rule.match_value);
-            if (regex.test(normalized)) return rule;
-          } catch (e) {
-            // Ignore bad regex
-          }
-          break;
-      }
-    }
-    return null;
-  };
 
   const handleScanSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -131,9 +91,8 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     }
 
     sessionScans.current.add(normalized);
+    setSessionScanCount(sessionScans.current.size);
 
-    // Local Mapping Match
-    const matchedRule = findMatchingRule(normalized);
     const initialStatus: ScanRow['status'] = 'pending';
 
     // Add to UI state
@@ -142,81 +101,34 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       serial_number: rawSerial,
       normalized_serial_number: normalized,
       status: initialStatus,
-      product_description: matchedRule?.product_description || 'Pending matching...',
+      product_description: 'Pending matching...',
       timestamp: new Date()
     };
     
     setScans(prev => [newScanRow, ...prev]);
 
-    // Restriction Enforcement Check
-    if (collection && matchedRule) {
-      // 1. Brand Restrictions
-      if (collection.restricted_brands) {
-        const allowedBrands = collection.restricted_brands.split(',').map((b: string) => b.trim().toLowerCase());
-        const scanBrand = matchedRule.brand?.toLowerCase();
-        if (scanBrand && !allowedBrands.includes(scanBrand)) {
-           setScans(prev => prev.map(s => s.id === uiId ? { 
-             ...s, 
-             status: 'error' as ScanRow['status'], 
-             product_description: `Restricted: Brand "${matchedRule.brand}" is not allowed here.` 
-           } : s));
-           sessionScans.current.delete(normalized);
-           return;
-        }
-      }
-
-      // 2. SKU/UPC Restrictions
-      if (collection.restricted_skus) {
-        const allowedItems = collection.restricted_skus.split(',').map((s: string) => s.trim().toLowerCase());
-        const scanSku = matchedRule.system_sku?.toLowerCase();
-        const scanUpc = matchedRule.upc?.toLowerCase();
-        
-        // Allow if EITHER SKU or UPC is in the allowed list
-        const isSkuAllowed = scanSku && allowedItems.includes(scanSku);
-        const isUpcAllowed = scanUpc && allowedItems.includes(scanUpc);
-
-        if (!isSkuAllowed && !isUpcAllowed) {
-           setScans(prev => prev.map(s => s.id === uiId ? { 
-             ...s, 
-             status: 'error' as ScanRow['status'], 
-             product_description: `Restricted: SKU "${matchedRule.system_sku}" or UPC "${matchedRule.upc}" is not allowed here.` 
-           } : s));
-           sessionScans.current.delete(normalized);
-           return;
-        }
-      }
-    }
-
-    // Async Database Upload
-    const match_status: ScanRow['status'] = matchedRule ? 'matched' : 'unmatched';
-    
-    const dbPayload = {
-      collection_id: collectionId,
-      serial_number: rawSerial,
-      normalized_serial_number: normalized,
-      match_status,
-      mapping_rule_id: matchedRule?.id || null,
-      scanned_by: session.user.email,
-      brand: matchedRule?.brand || null,
-      vendor_id: matchedRule?.vendor_id || null,
-      vendor_name: matchedRule?.vendor_name || null,
-      product_description: matchedRule?.product_description || null,
-      upc: matchedRule?.upc || null,
-      system_sku: matchedRule?.system_sku || null,
-      manufacturer_sku: matchedRule?.manufacturer_sku || null,
-    };
-
-    const { error } = await supabase.from('serial_scans').insert([dbPayload]);
-
-    if (error) {
-      if (error.code === '23505') { // Unique constraint violation in postgres
+    try {
+      const savedScan = await apiJson<SerialScanRecord>('/api/scans', {
+        method: 'POST',
+        body: JSON.stringify({
+          collection_id: collectionId,
+          serial_number: rawSerial,
+        }),
+      });
+      setScans(prev => prev.map(s => s.id === uiId ? {
+        ...s,
+        status: savedScan.match_status === 'matched' ? 'matched' : 'unmatched',
+        product_description: savedScan.product_description || 'No mapping found.',
+      } : s));
+    } catch (error) {
+      if (error instanceof ApiClientError && error.code === 'DUPLICATE_SERIAL') {
         setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: 'duplicate' as ScanRow['status'], product_description: 'Already scanned globally.' } : s));
       } else {
-        setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: 'error' as ScanRow['status'], product_description: 'Failed to save to database.' } : s));
+        const message = error instanceof Error ? error.message : 'Failed to save to database.';
+        setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: 'error' as ScanRow['status'], product_description: message } : s));
         sessionScans.current.delete(normalized); // Remove from local cache so they can try again
+        setSessionScanCount(sessionScans.current.size);
       }
-    } else {
-      setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: match_status, product_description: matchedRule?.product_description || 'No mapping found.' } : s));
     }
   };
 
@@ -245,7 +157,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         </div>
         <div className="card" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}>
           <div className="text-muted text-sm">Session Scans</div>
-          <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>{sessionScans.current.size}</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>{sessionScanCount}</div>
         </div>
       </div>
 

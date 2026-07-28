@@ -1,60 +1,60 @@
 'use client';
 
 import { useEffect, useState, use } from 'react';
-import { supabase } from '@/lib/supabase';
-import { useSession } from 'next-auth/react';
+import { apiJson } from '@/lib/api-client';
+import type { CollectionRecord, SerialScanRecord } from '@/lib/types';
 import Link from 'next/link';
 import { ArrowLeft, Trash2 } from 'lucide-react';
 
-type Scan = {
-  id: string;
-  serial_number: string;
-  normalized_serial_number: string;
-  match_status: string;
-  product_description: string;
-  brand: string;
-  qty_sold: number;
-  scanned_at: string;
-  scanned_by: string;
-};
+type Scan = SerialScanRecord;
 
 export default function CollectionViewPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const collectionId = resolvedParams.id;
-  const { data: session } = useSession();
   
   const [scans, setScans] = useState<Scan[]>([]);
-  const [collection, setCollection] = useState<any>(null);
+  const [collection, setCollection] = useState<CollectionRecord | null>(null);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+
+    Promise.all([
+        apiJson<CollectionRecord>(
+          `/api/collections/${encodeURIComponent(collectionId)}`,
+        ),
+        apiJson<SerialScanRecord[]>(
+          `/api/scans?collectionId=${encodeURIComponent(collectionId)}`,
+        ),
+      ])
+      .then(([colData, scanData]) => {
+        if (cancelled) return;
+        setCollection(colData);
+        setScans(scanData);
+      })
+      .catch(() => {
+        if (!cancelled) alert('Failed to load collection scans.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [collectionId]);
-
-  const fetchData = async () => {
-    const { data: colData } = await supabase.from('collections').select('*').eq('id', collectionId).single();
-    if (colData) setCollection(colData);
-
-    const { data: scanData } = await supabase
-      .from('serial_scans')
-      .select('*')
-      .eq('collection_id', collectionId)
-      .order('scanned_at', { ascending: false });
-    
-    if (scanData) setScans(scanData);
-  };
 
   const handleDelete = async (scanId: string) => {
     if (!confirm('Are you sure you want to delete this scan? This action cannot be undone.')) return;
 
-    const { error } = await supabase
-      .from('serial_scans')
-      .delete()
-      .eq('id', scanId);
-
-    if (!error) {
+    try {
+      const response = await fetch(
+        `/api/scans/${encodeURIComponent(scanId)}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || 'Failed to delete scan.');
+      }
       setScans(prev => prev.filter(s => s.id !== scanId));
-    } else {
-      alert('Failed to delete scan.');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to delete scan.');
     }
   };
 

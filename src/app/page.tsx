@@ -1,19 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiJson } from '@/lib/api-client';
+import type { CollectionRecord, SerialScanRecord } from '@/lib/types';
 import Link from 'next/link';
 import { Plus, Play, Download, Archive, BarChart3, X, Settings2, Trash2, Copy } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
-type Collection = {
-  id: string;
-  name: string;
-  brand: string | null;
-  status: 'draft' | 'active' | 'closed' | 'exported';
-  restricted_skus: string | null;
-  restricted_brands: string | null;
-  created_at: string;
+type Collection = CollectionRecord;
+type RollupSummary = {
+  byProduct: Record<string, number>;
+  byEmployee: Record<string, number>;
+  byBrand: Record<string, number>;
 };
 
 export default function Home() {
@@ -25,31 +23,23 @@ export default function Home() {
   const [newCollectionBrand, setNewCollectionBrand] = useState('');
   const [showClosed, setShowClosed] = useState(false);
   const [tileMenus, setTileMenus] = useState<Record<string, 'rollup' | 'settings' | null>>({});
-  const [rollupData, setRollupData] = useState<Record<string, any>>({});
+  const [rollupData, setRollupData] = useState<Record<string, RollupSummary>>({});
   const [isRollupLoading, setIsRollupLoading] = useState(false);
   const [editingCollection, setEditingCollection] = useState<Collection | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [newSku, setNewSku] = useState('');
   const [newBrand, setNewBrand] = useState('');
   const [skuDescriptions, setSkuDescriptions] = useState<Record<string, string>>({});
+  const requestedSkuDescriptions = useRef(new Set<string>());
 
   const filteredCollections = showClosed 
     ? collections 
     : collections.filter(c => c.status !== 'closed');
 
-  useEffect(() => {
-    fetchCollections();
-  }, []);
+  const fetchSkuDescription = useCallback(async (id: string) => {
+    if (requestedSkuDescriptions.current.has(id)) return;
+    requestedSkuDescriptions.current.add(id);
 
-  useEffect(() => {
-    if (editingCollection?.restricted_skus) {
-      const ids = editingCollection.restricted_skus.split(',').filter(id => id && !skuDescriptions[id]);
-      ids.forEach(id => fetchSkuDescription(id));
-    }
-  }, [editingCollection?.id]);
-
-  const fetchSkuDescription = async (id: string) => {
-    if (skuDescriptions[id]) return;
     try {
       // Try UPC first, then system SKU
       const res = await fetch(`/api/bigquery/lookup?upc=${encodeURIComponent(id)}`);
@@ -63,51 +53,68 @@ export default function Home() {
           setSkuDescriptions(prev => ({ ...prev, [id]: data2.product.product_description }));
         }
       }
-    } catch (e) {}
-  };
-
-  const fetchCollections = async () => {
-    setIsLoading(true);
-    const { data, error } = await supabase
-      .from('collections')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (!error && data) {
-      setCollections(data);
+    } catch {
+      requestedSkuDescriptions.current.delete(id);
     }
-    setIsLoading(false);
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchCollections();
+  }, []);
+
+  useEffect(() => {
+    if (editingCollection?.restricted_skus) {
+      const ids = editingCollection.restricted_skus.split(',').filter(Boolean);
+      ids.forEach(id => fetchSkuDescription(id));
+    }
+  }, [editingCollection?.restricted_skus, fetchSkuDescription]);
+
+  async function fetchCollections() {
+    setIsLoading(true);
+    try {
+      const data = await apiJson<Collection[]>('/api/collections');
+      setCollections(data);
+    } catch {
+      alert('Failed to load collections.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCollectionName || !session?.user?.email) return;
 
     setIsCreating(true);
-    const { data, error } = await supabase
-      .from('collections')
-      .insert([
-        {
+    try {
+      const data = await apiJson<Collection>('/api/collections', {
+        method: 'POST',
+        body: JSON.stringify({
           name: newCollectionName,
           brand: newCollectionBrand || null,
           status: 'active',
-          created_by: session.user.email,
-        }
-      ])
-      .select()
-      .single();
-
-    if (!error && data) {
-      setCollections([data, ...collections]);
+        }),
+      });
+      setCollections(prev => [data, ...prev]);
       setNewCollectionName('');
       setNewCollectionBrand('');
+    } catch {
+      alert('Failed to create collection.');
+    } finally {
+      setIsCreating(false);
     }
-    setIsCreating(false);
   };
 
   const updateStatus = async (id: string, status: string) => {
-    await supabase.from('collections').update({ status }).eq('id', id);
-    fetchCollections();
+    try {
+      await apiJson(`/api/collections/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      fetchCollections();
+    } catch {
+      alert('Failed to update collection status.');
+    }
   };
 
   const handleSaveSettings = async (e: React.FormEvent) => {
@@ -115,44 +122,44 @@ export default function Home() {
     if (!editingCollection) return;
 
     setIsSavingSettings(true);
-    const { error } = await supabase
-      .from('collections')
-      .update({
+    try {
+      await apiJson(
+        `/api/collections/${encodeURIComponent(editingCollection.id)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
         name: editingCollection.name,
         brand: editingCollection.brand,
         restricted_skus: editingCollection.restricted_skus,
         restricted_brands: editingCollection.restricted_brands
-      })
-      .eq('id', editingCollection.id);
-
-    if (!error) {
+          }),
+        },
+      );
       fetchCollections();
       setEditingCollection(null);
+    } catch {
+      alert('Failed to save collection settings.');
+    } finally {
+      setIsSavingSettings(false);
     }
-    setIsSavingSettings(false);
   };
 
   const handleDuplicate = async (col: Collection) => {
     if (!session?.user?.email) return;
 
-    const { data, error } = await supabase
-      .from('collections')
-      .insert([
-        {
+    try {
+      const data = await apiJson<Collection>('/api/collections', {
+        method: 'POST',
+        body: JSON.stringify({
           name: `${col.name} (Copy)`,
           brand: col.brand,
           status: 'active',
           restricted_skus: col.restricted_skus,
           restricted_brands: col.restricted_brands,
-          created_by: session.user.email,
-        }
-      ])
-      .select()
-      .single();
-
-    if (!error && data) {
-      setCollections([data, ...collections]);
-    } else {
+        }),
+      });
+      setCollections(prev => [data, ...prev]);
+    } catch {
       alert('Failed to duplicate collection.');
     }
   };
@@ -173,12 +180,10 @@ export default function Home() {
     }
 
     setIsRollupLoading(true);
-    const { data, error } = await supabase
-      .from('serial_scans')
-      .select('product_description, brand, scanned_by')
-      .eq('collection_id', col.id);
-
-    if (!error && data) {
+    try {
+      const data = await apiJson<SerialScanRecord[]>(
+        `/api/scans?collectionId=${encodeURIComponent(col.id)}`,
+      );
       const byProduct: Record<string, number> = {};
       const byEmployee: Record<string, number> = {};
       const byBrand: Record<string, number> = {};
@@ -198,8 +203,11 @@ export default function Home() {
         [col.id]: { byProduct, byEmployee, byBrand }
       }));
       setTileMenus(prev => ({ ...prev, [col.id]: 'rollup' }));
+    } catch {
+      alert('Failed to load collection summary.');
+    } finally {
+      setIsRollupLoading(false);
     }
-    setIsRollupLoading(false);
   };
 
   const closeMenu = (id: string) => {
@@ -365,8 +373,8 @@ export default function Home() {
                         </h5>
                         <div className="flex flex-col gap-3">
                           {Object.entries(rollupData[col.id].byProduct)
-                            .sort((a: any, b: any) => b[1] - a[1])
-                            .map(([name, count]: any) => {
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([name, count]) => {
                               const counts = Object.values(rollupData[col.id].byProduct) as number[];
                               const max = Math.max(...counts);
                               const percent = (count / max) * 100;
@@ -395,8 +403,8 @@ export default function Home() {
                           </h5>
                           <div className="grid grid-cols-1 gap-2">
                             {Object.entries(rollupData[col.id].byEmployee)
-                              .sort((a: any, b: any) => b[1] - a[1])
-                              .map(([name, count]: any) => (
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([name, count]) => (
                                 <div key={name} className="flex justify-between items-center text-[11px] bg-surface p-2 rounded-lg border border-border border-opacity-50">
                                   <span className="truncate text-muted">{name}</span>
                                   <span className="badge badge-neutral shrink-0" style={{ fontSize: '10px' }}>{count}</span>
@@ -411,8 +419,8 @@ export default function Home() {
                           </h5>
                           <div className="flex flex-wrap gap-2">
                             {Object.entries(rollupData[col.id].byBrand)
-                              .sort((a: any, b: any) => b[1] - a[1])
-                              .map(([name, count]: any) => (
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([name, count]) => (
                                 <div key={name} className="flex items-center gap-2 bg-surface px-3 py-1.5 rounded-full border border-border border-opacity-50 text-[11px]">
                                   <span className="font-medium">{name}</span>
                                   <div className="w-px h-3 bg-border" />

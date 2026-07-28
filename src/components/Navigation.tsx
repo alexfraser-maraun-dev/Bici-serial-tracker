@@ -1,6 +1,7 @@
 'use client';
 
-import { signIn, signOut, useSession } from 'next-auth/react';
+import { signOut, useSession } from 'next-auth/react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { LogOut, Settings, List, QrCode, ShieldAlert } from 'lucide-react';
 
@@ -20,7 +21,7 @@ export default function Navigation() {
     }}>
       <div className="flex items-center gap-6">
         <Link href="/" className="flex items-center gap-3" style={{ textDecoration: 'none', color: 'inherit' }}>
-          <img src="/logo.svg" alt="Bici Logo" style={{ height: '32px', width: 'auto' }} />
+          <Image src="/logo.svg" alt="Bici Logo" width={32} height={32} />
           <h1 style={{ margin: 0, fontSize: '1.25rem' }}>Bici Serial Tracker</h1>
         </Link>
         <nav className="flex gap-4">

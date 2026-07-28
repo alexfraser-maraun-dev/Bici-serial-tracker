@@ -1,4 +1,4 @@
-import NextAuth, { NextAuthOptions } from "next-auth";
+import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
 export const authOptions: NextAuthOptions = {
@@ -16,8 +16,7 @@ export const authOptions: NextAuthOptions = {
         return false; // Reject sign-ins from other domains
       }
     },
-    async session({ session, token }) {
-      // You can add more session handling here if needed
+    async session({ session }) {
       return session;
     },
   },

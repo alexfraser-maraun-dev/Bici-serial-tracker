@@ -29,14 +29,14 @@ export default function HowToPage() {
           <ul className="flex flex-col gap-2 list-disc pl-6">
             <li>Create a new collection for your specific event or shipment.</li>
             <li>Click <strong>Start Scanning</strong> on an active collection.</li>
-            <li>Ensure your scanner is set up to send an "Enter" key after each scan.</li>
+            <li>Ensure your scanner is set up to send an &quot;Enter&quot; key after each scan.</li>
             <li>Simply scan serial numbers one after another. The UI will show you if they matched a rule, were unmatched, or were duplicates.</li>
           </ul>
         </section>
 
         <section className="card">
           <h2 className="flex items-center gap-2 mb-4"><Database size={24} /> 3. Handle Unmatched Scans</h2>
-          <p className="mb-4">If you scan a serial number that doesn't have a rule yet:</p>
+          <p className="mb-4">If you scan a serial number that doesn&apos;t have a rule yet:</p>
           <ul className="flex flex-col gap-2 list-disc pl-6">
             <li>It will be marked as <strong>Unmatched</strong>.</li>
             <li>Go to the <strong>Unmatched</strong> tab in the navigation bar.</li>

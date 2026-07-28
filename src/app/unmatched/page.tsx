@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
-import { useSession } from 'next-auth/react';
+import { apiJson } from '@/lib/api-client';
+import type { SerialScanRecord } from '@/lib/types';
 import { Edit2, CheckCircle2, Trash2 } from 'lucide-react';
 
 type Scan = {
@@ -14,7 +14,6 @@ type Scan = {
 };
 
 export default function UnmatchedPage() {
-  const { data: session } = useSession();
   const [unmatched, setUnmatched] = useState<Scan[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   
@@ -30,15 +29,15 @@ export default function UnmatchedPage() {
     fetchUnmatched();
   }, []);
 
-  const fetchUnmatched = async () => {
-    const { data } = await supabase
-      .from('serial_scans')
-      .select('id, serial_number, normalized_serial_number, scanned_at, collection_id')
-      .eq('match_status', 'unmatched')
-      .order('scanned_at', { ascending: false });
-    
-    if (data) setUnmatched(data);
-  };
+  async function fetchUnmatched() {
+    try {
+      setUnmatched(
+        await apiJson<SerialScanRecord[]>('/api/scans?status=unmatched'),
+      );
+    } catch {
+      alert('Failed to load unmatched scans.');
+    }
+  }
 
   const [isSearching, setIsSearching] = useState(false);
 
@@ -73,7 +72,7 @@ export default function UnmatchedPage() {
       } else {
         alert(`BigQuery Error: ${data.details || data.error || 'Unknown error'}`);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       alert('Error searching BigQuery. Check the console.');
     }
@@ -86,73 +85,43 @@ export default function UnmatchedPage() {
       return;
     }
 
-    const currentScan = unmatched.find(s => s.id === id);
-    if (!currentScan) return;
-
-    // 1. Fetch collection restrictions for THIS scan's collection
-    const { data: collection, error: colError } = await supabase
-      .from('collections')
-      .select('restricted_skus, restricted_brands')
-      .eq('id', currentScan.collection_id)
-      .single();
-
-    if (!colError && collection) {
-      // 2. Validate Brand
-      if (collection.restricted_brands) {
-        const allowedBrands = collection.restricted_brands.split(',').map((b: string) => b.trim().toLowerCase());
-        if (brand && !allowedBrands.includes(brand.trim().toLowerCase())) {
-          alert(`RESTRICTION ALERT: The brand "${brand}" is not allowed in this collection. Manual assignment cancelled.`);
-          return;
-        }
-      }
-
-      // 3. Validate SKU/UPC
-      if (collection.restricted_skus) {
-        const allowedItems = collection.restricted_skus.split(',').map((s: string) => s.trim().toLowerCase());
-        const isSkuAllowed = systemSku && allowedItems.includes(systemSku.toLowerCase());
-        const isUpcAllowed = upc && allowedItems.includes(upc.toLowerCase());
-        
-        if (!isSkuAllowed && !isUpcAllowed) {
-          alert(`RESTRICTION ALERT: The SKU "${systemSku}" or UPC "${upc}" is not allowed in this collection. Manual assignment cancelled.`);
-          return;
-        }
-      }
-    }
-
-    // Update the scan(s)
-    const { error } = await supabase
-      .from('serial_scans')
-      .update({
-        brand,
-        vendor_id: vendorId,
-        product_description: productDescription,
-        upc,
-        system_sku: systemSku,
-        manufacturer_sku: manufacturerSku,
-        match_status: 'manually_assigned' as any
-      })
-      .eq('id', id); // Only update this specific scan to be safe with restrictions
-
-    if (!error) {
+    try {
+      await apiJson(`/api/scans/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          brand,
+          vendor_id: vendorId,
+          product_description: productDescription,
+          upc,
+          system_sku: systemSku,
+          manufacturer_sku: manufacturerSku,
+        }),
+      });
       setEditingId(null);
       fetchUnmatched();
-    } else {
-      alert('Failed to save manually assigned data.');
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Failed to save manually assigned data.',
+      );
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to permanently delete this scan?')) return;
     
-    const { error } = await supabase
-      .from('serial_scans')
-      .delete()
-      .eq('id', id);
-
-    if (!error) {
+    try {
+      const response = await fetch(`/api/scans/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || 'Failed to delete scan.');
+      }
       fetchUnmatched();
-    } else {
-      alert('Failed to delete scan.');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to delete scan.');
     }
   };
 

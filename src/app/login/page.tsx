@@ -9,7 +9,7 @@ import { useSession } from 'next-auth/react';
 function LoginContent() {
   const searchParams = useSearchParams();
   const error = searchParams.get('error');
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const router = useRouter();
 
   useEffect(() => {

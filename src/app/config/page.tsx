@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { apiJson } from '@/lib/api-client';
+import type { MappingRuleRecord, MatchType } from '@/lib/types';
 import { useSession } from 'next-auth/react';
 import { Search, Save, Settings2, ShieldCheck, AlertTriangle } from 'lucide-react';
 
@@ -31,7 +32,7 @@ export default function ConfigPage() {
   const [testResult, setTestResult] = useState<'match' | 'no-match' | null>(null);
 
   // Existing rules
-  const [rules, setRules] = useState<any[]>([]);
+  const [rules, setRules] = useState<MappingRuleRecord[]>([]);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [conflictWarnings, setConflictWarnings] = useState<{ ruleId: string; description: string; matchValue: string }[]>([]);
 
@@ -39,12 +40,15 @@ export default function ConfigPage() {
     fetchRules();
   }, []);
 
-  const fetchRules = async () => {
-    const { data } = await supabase.from('serial_mapping_rules').select('*').order('priority', { ascending: false });
-    if (data) setRules(data);
-  };
+  async function fetchRules() {
+    try {
+      setRules(await apiJson<MappingRuleRecord[]>('/api/mapping-rules'));
+    } catch {
+      alert('Failed to load mapping rules.');
+    }
+  }
 
-  const detectConflicts = (currentValue: string, currentType: string, currentId: string | null, existingRules: any[]) => {
+  const detectConflicts = (currentValue: string, currentType: string, currentId: string | null, existingRules: MappingRuleRecord[]) => {
     if (!currentValue || currentType !== 'prefix') {
       setConflictWarnings([]);
       return;
@@ -90,7 +94,7 @@ export default function ConfigPage() {
       } else {
         alert(`BigQuery Error: ${data.details || data.error || 'Unknown error'}`);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       alert('Error searching BigQuery. Check the console.');
     }
@@ -114,16 +118,29 @@ export default function ConfigPage() {
       match_type: matchType,
       match_value: finalMatchValue,
       priority: 10,
-      created_by: session.user.email,
       active: true
     };
 
-    const { error } = editingRuleId 
-      ? await supabase.from('serial_mapping_rules').update(payload).eq('id', editingRuleId)
-      : await supabase.from('serial_mapping_rules').insert([payload]);
-
-    if (!error) {
-      alert(editingRuleId ? 'Mapping rule updated successfully!' : 'Mapping rule saved successfully!');
+    try {
+      const result = await apiJson<{
+        rule: MappingRuleRecord;
+        reconciledCount: number;
+      }>(
+        editingRuleId
+          ? `/api/mapping-rules/${encodeURIComponent(editingRuleId)}`
+          : '/api/mapping-rules',
+        {
+          method: editingRuleId ? 'PATCH' : 'POST',
+          body: JSON.stringify(payload),
+        },
+      );
+      const reconciliationMessage =
+        result.reconciledCount > 0
+          ? ` ${result.reconciledCount} previously unmatched scan${result.reconciledCount === 1 ? '' : 's'} were matched.`
+          : '';
+      alert(
+        `${editingRuleId ? 'Mapping rule updated successfully!' : 'Mapping rule saved successfully!'}${reconciliationMessage}`,
+      );
       fetchRules();
       setProductData(null);
       setUpcInput('');
@@ -132,12 +149,12 @@ export default function ConfigPage() {
       setPrefixLength('');
       setEditingRuleId(null);
       setConflictWarnings([]);
-    } else {
-      alert('Failed to save mapping rule.');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to save mapping rule.');
     }
   };
 
-  const startEdit = (rule: any) => {
+  const startEdit = (rule: MappingRuleRecord) => {
     setEditingRuleId(rule.id);
     setProductData({
       upc: rule.upc,
@@ -174,8 +191,19 @@ export default function ConfigPage() {
 
   const deleteRule = async (id: string) => {
     if (!confirm('Are you sure you want to delete this rule?')) return;
-    const { error } = await supabase.from('serial_mapping_rules').delete().eq('id', id);
-    if (!error) fetchRules();
+    try {
+      await fetch(`/api/mapping-rules/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }).then(async response => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.error || 'Failed to delete mapping rule.');
+        }
+      });
+      fetchRules();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to delete mapping rule.');
+    }
   };
 
   return (
@@ -244,8 +272,8 @@ export default function ConfigPage() {
                 <p className="text-sm text-muted mb-2">2. Define your rule.</p>
                 <div className="flex gap-4 mb-2">
 
-                  <select className="input" value={matchType} onChange={(e: any) => { 
-                    const val = e.target.value as any;
+                  <select className="input" value={matchType} onChange={e => {
+                    const val = e.target.value as MatchType;
                     setMatchType(val); 
                     setTestResult(null); 
                     detectConflicts(matchValue, val, editingRuleId, rules);
@@ -294,7 +322,7 @@ export default function ConfigPage() {
                     <div className="flex flex-col gap-1">
                       {conflictWarnings.map(c => (
                         <p key={c.ruleId} className="text-xs text-muted">
-                          Overlaps with <strong>"{c.description}"</strong> (prefix: <code>{c.matchValue}</code>). Multiple rules may match the same serial.
+                          Overlaps with <strong>&quot;{c.description}&quot;</strong> (prefix: <code>{c.matchValue}</code>). Multiple rules may match the same serial.
                         </p>
                       ))}
                     </div>
