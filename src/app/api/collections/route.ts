@@ -4,6 +4,12 @@ import {
   DatabaseRequestError,
   listCollections,
 } from '@/lib/bigquery-db';
+import {
+  CollectionInputError,
+  parseDateInput,
+  parseShopIdsInput,
+  validateWindow,
+} from '@/lib/collection-input';
 import type { CollectionStatus } from '@/lib/types';
 
 const collectionStatuses: CollectionStatus[] = [
@@ -50,6 +56,10 @@ export async function POST(request: Request) {
       );
     }
 
+    const startsOn = parseDateInput(body.starts_on, 'Start date');
+    const endsOn = parseDateInput(body.ends_on, 'End date');
+    validateWindow(startsOn, endsOn);
+
     const collection = await createCollection(
       {
         name,
@@ -63,11 +73,17 @@ export async function POST(request: Request) {
           typeof body.restricted_brands === 'string'
             ? body.restricted_brands
             : null,
+        starts_on: startsOn,
+        ends_on: endsOn,
+        shop_ids: parseShopIdsInput(body.shop_ids),
       },
       email,
     );
     return Response.json(collection, { status: 201 });
   } catch (error) {
+    if (error instanceof CollectionInputError) {
+      return Response.json({ error: error.message }, { status: 400 });
+    }
     if (error instanceof DatabaseRequestError) {
       return Response.json(
         { error: error.message, code: error.code },

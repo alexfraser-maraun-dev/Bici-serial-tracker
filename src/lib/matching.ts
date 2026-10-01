@@ -35,7 +35,7 @@ export function findMatchingRule(
   return rules.find((rule) => matchesRule(normalizedSerial, rule)) ?? null;
 }
 
-function splitRestrictionList(value: string | null) {
+export function splitRestrictionList(value: string | null) {
   return (value ?? '')
     .split(',')
     .map((item) => item.trim().toLowerCase())

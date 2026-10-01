@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiJson } from '@/lib/api-client';
-import type { CollectionRecord, SerialScanRecord } from '@/lib/types';
+import type { CollectionRecord, SerialScanRecord, ShopRecord } from '@/lib/types';
 import Link from 'next/link';
-import { Plus, Play, Download, Archive, BarChart3, X, Settings2, Trash2, Copy } from 'lucide-react';
+import { Plus, Play, Download, Archive, BarChart3, X, Settings2, Trash2, Copy, Receipt } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
 type Collection = CollectionRecord;
@@ -31,6 +31,7 @@ export default function Home() {
   const [newBrand, setNewBrand] = useState('');
   const [skuDescriptions, setSkuDescriptions] = useState<Record<string, string>>({});
   const requestedSkuDescriptions = useRef(new Set<string>());
+  const [shops, setShops] = useState<ShopRecord[]>([]);
 
   const filteredCollections = showClosed 
     ? collections 
@@ -60,7 +61,23 @@ export default function Home() {
 
   useEffect(() => {
     fetchCollections();
+    apiJson<ShopRecord[]>('/api/shops')
+      .then(setShops)
+      .catch(() => setShops([]));
   }, []);
+
+  const shopNames = (ids: string | null) =>
+    (ids ? ids.split(',') : [])
+      .map(id => shops.find(shop => String(shop.id) === id)?.name ?? `Shop ${id}`)
+      .join(', ');
+
+  const toggleShop = (shopId: number) => {
+    if (!editingCollection) return;
+    const current = editingCollection.shop_ids ? editingCollection.shop_ids.split(',') : [];
+    const id = String(shopId);
+    const updated = current.includes(id) ? current.filter(s => s !== id) : [...current, id];
+    setEditingCollection({ ...editingCollection, shop_ids: updated.join(',') || null });
+  };
 
   useEffect(() => {
     if (editingCollection?.restricted_skus) {
@@ -131,14 +148,17 @@ export default function Home() {
         name: editingCollection.name,
         brand: editingCollection.brand,
         restricted_skus: editingCollection.restricted_skus,
-        restricted_brands: editingCollection.restricted_brands
+        restricted_brands: editingCollection.restricted_brands,
+        starts_on: editingCollection.starts_on,
+        ends_on: editingCollection.ends_on,
+        shop_ids: editingCollection.shop_ids,
           }),
         },
       );
       fetchCollections();
       setEditingCollection(null);
-    } catch {
-      alert('Failed to save collection settings.');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to save collection settings.');
     } finally {
       setIsSavingSettings(false);
     }
@@ -156,6 +176,7 @@ export default function Home() {
           status: 'active',
           restricted_skus: col.restricted_skus,
           restricted_brands: col.restricted_brands,
+          shop_ids: col.shop_ids,
         }),
       });
       setCollections(prev => [data, ...prev]);
@@ -293,6 +314,8 @@ export default function Home() {
                 </div>
                 <p className="text-sm text-muted mb-4">
                   {col.brand ? `Brand: ${col.brand}` : 'No brand specified'} <br />
+                  Promo window: {col.starts_on && col.ends_on ? `${col.starts_on} to ${col.ends_on}` : 'Not set'}
+                  {col.shop_ids ? ` (${shopNames(col.shop_ids)})` : ''} <br />
                   Created: {new Date(col.created_at).toLocaleDateString()}
                 </p>
               </div>
@@ -336,6 +359,10 @@ export default function Home() {
                 >
                   <Settings2 size={16} />
                 </button>
+
+                <Link href={`/collection/${col.id}/claim`} className="btn btn-outline" title="Promo Claim">
+                  <Receipt size={16} /> Claim
+                </Link>
 
                 <button onClick={() => handleDuplicate(col)} className="btn btn-outline" title="Duplicate Collection">
                   <Copy size={16} />
@@ -474,6 +501,45 @@ export default function Home() {
                           value={editingCollection.brand || ''}
                           onChange={e => setEditingCollection({...editingCollection, brand: e.target.value || null})}
                         />
+                      </div>
+
+                      <div className="p-4 bg-surface rounded-lg border border-border mt-2">
+                        <h4 className="text-[10px] font-bold uppercase text-primary mb-4 tracking-widest">Promo Window</h4>
+                        <div className="flex gap-4 mb-4">
+                          <div style={{ flex: 1 }}>
+                            <label className="text-[9px] font-bold uppercase text-muted mb-2 block">Start Date</label>
+                            <input
+                              type="date"
+                              className="input w-full py-2 text-sm"
+                              value={editingCollection.starts_on || ''}
+                              onChange={e => setEditingCollection({...editingCollection, starts_on: e.target.value || null})}
+                            />
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <label className="text-[9px] font-bold uppercase text-muted mb-2 block">End Date</label>
+                            <input
+                              type="date"
+                              className="input w-full py-2 text-sm"
+                              value={editingCollection.ends_on || ''}
+                              min={editingCollection.starts_on || undefined}
+                              onChange={e => setEditingCollection({...editingCollection, ends_on: e.target.value || null})}
+                            />
+                          </div>
+                        </div>
+                        <label className="text-[9px] font-bold uppercase text-muted mb-2 block">Shops (none selected = all shops)</label>
+                        <div className="flex gap-4" style={{ flexWrap: 'wrap' }}>
+                          {shops.map(shop => (
+                            <label key={shop.id} className="flex items-center gap-2 text-sm" style={{ cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                style={{ width: 'auto' }}
+                                checked={(editingCollection.shop_ids || '').split(',').includes(String(shop.id))}
+                                onChange={() => toggleShop(shop.id)}
+                              />
+                              {shop.name}
+                            </label>
+                          ))}
+                        </div>
                       </div>
 
                       <div className="p-4 bg-surface rounded-lg border border-border mt-2">

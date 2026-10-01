@@ -1,5 +1,5 @@
 import { getAuthenticatedEmail, apiError } from '@/lib/api-auth';
-import { queryRows } from '@/lib/bigquery';
+import { lightspeedTable, queryRows } from '@/lib/bigquery';
 
 export async function GET(req: Request) {
   const email = await getAuthenticatedEmail();
@@ -25,12 +25,12 @@ export async function GET(req: Request) {
         m.name AS brand,
         vn.vendor_id AS vendor_id,
         v.name AS vendor_name
-      FROM \`bici-klaviyo-datasync.light_speed_retailne.item_history\` i
-      LEFT JOIN \`bici-klaviyo-datasync.light_speed_retailne.manufacturer_history\` m 
+      FROM ${lightspeedTable('item_history')} i
+      LEFT JOIN ${lightspeedTable('manufacturer_history')} m
         ON i.manufacturer_id = m.id
-      LEFT JOIN \`bici-klaviyo-datasync.light_speed_retailne.item_vendor_num_history\` vn
+      LEFT JOIN ${lightspeedTable('item_vendor_num_history')} vn
         ON i.id = vn.item_id
-      LEFT JOIN \`bici-klaviyo-datasync.light_speed_retailne.vendor_history\` v
+      LEFT JOIN ${lightspeedTable('vendor_history')} v
         ON vn.vendor_id = v.id
       WHERE ${upc ? 'i.upc = @upc' : 'CAST(i.system_sku AS STRING) = @sku'}
       LIMIT 1

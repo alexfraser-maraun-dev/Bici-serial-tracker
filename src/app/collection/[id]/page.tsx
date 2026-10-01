@@ -4,7 +4,7 @@ import { useEffect, useState, use } from 'react';
 import { apiJson } from '@/lib/api-client';
 import type { CollectionRecord, SerialScanRecord } from '@/lib/types';
 import Link from 'next/link';
-import { ArrowLeft, Trash2 } from 'lucide-react';
+import { ArrowLeft, Receipt, Trash2 } from 'lucide-react';
 
 type Scan = SerialScanRecord;
 
@@ -68,6 +68,9 @@ export default function CollectionViewPage({ params }: { params: Promise<{ id: s
           <h1 style={{ margin: 0 }}>{collection?.name || 'Loading Collection...'}</h1>
           <p className="text-muted">Total Scans: {scans.length}</p>
         </div>
+        <Link href={`/collection/${collectionId}/claim`} className="btn btn-primary" style={{ marginLeft: 'auto' }}>
+          <Receipt size={16} style={{ marginRight: '0.5rem' }} /> Promo Claim
+        </Link>
       </div>
 
       <div className="card">

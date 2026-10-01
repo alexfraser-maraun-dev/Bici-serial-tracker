@@ -1,6 +1,6 @@
 'use client';
 
-import { BookOpen, Search, QrCode, Database, Download } from 'lucide-react';
+import { BookOpen, Search, QrCode, Database, Download, Receipt } from 'lucide-react';
 
 export default function HowToPage() {
   return (
@@ -27,7 +27,8 @@ export default function HowToPage() {
           <h2 className="flex items-center gap-2 mb-4"><QrCode size={24} /> 2. Start a Collection</h2>
           <p className="mb-4">Go to the <strong>Collections</strong> dashboard:</p>
           <ul className="flex flex-col gap-2 list-disc pl-6">
-            <li>Create a new collection for your specific event or shipment.</li>
+            <li>Create a new collection for each MAP promo window and location. Serials are rescanned for every window, so the same serial can appear in more than one collection.</li>
+            <li>In the collection <strong>Settings</strong>, set the <strong>Promo Window</strong> start and end dates, the shops it applies to, and the promo SKUs under <strong>Allowed System SKUs or UPCs</strong>.</li>
             <li>Click <strong>Start Scanning</strong> on an active collection.</li>
             <li>Ensure your scanner is set up to send an &quot;Enter&quot; key after each scan.</li>
             <li>Simply scan serial numbers one after another. The UI will show you if they matched a rule, were unmatched, or were duplicates.</li>
@@ -46,7 +47,18 @@ export default function HowToPage() {
         </section>
 
         <section className="card">
-          <h2 className="flex items-center gap-2 mb-4"><Download size={24} /> 4. Export Your Data</h2>
+          <h2 className="flex items-center gap-2 mb-4"><Receipt size={24} /> 4. Claim Promo Credits</h2>
+          <p className="mb-4">Click <strong>Claim</strong> on a collection to match sales in its promo window to the serials you scanned:</p>
+          <ul className="flex flex-col gap-2 list-disc pl-6">
+            <li>Qualifying sales are completed Lightspeed sales (in-store and online) of the promo SKUs in the selected shops during the window. Returned units and $0 lines are excluded.</li>
+            <li>Serials are linked to sales automatically, one per unit sold. The goal is to cover every sale, so a serial is attributed to a sale rather than traced to it.</li>
+            <li>Check <strong>Missing a serial</strong>. Fix gaps by assigning unmatched scans, scanning more serials, or picking a serial by hand. Then run <strong>Auto-link</strong> again.</li>
+            <li>Download the <strong>Claim CSV</strong> (one row per serial) and the <strong>Receipts PDF</strong> (one receipt per sale, showing only the receipt number, date, customer name and items) for the vendor.</li>
+          </ul>
+        </section>
+
+        <section className="card">
+          <h2 className="flex items-center gap-2 mb-4"><Download size={24} /> 5. Export Your Data</h2>
           <p className="mb-4">When your collection is complete:</p>
           <ul className="flex flex-col gap-2 list-disc pl-6">
             <li>Go back to the <strong>Collections</strong> dashboard.</li>

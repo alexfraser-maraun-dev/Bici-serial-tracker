@@ -11,6 +11,8 @@ import {
 import type {
   CollectionRecord,
   CollectionStatus,
+  LinkMethod,
+  SaleSerialLink,
   MappingRuleRecord,
   MatchStatus,
   MatchType,
@@ -21,6 +23,10 @@ import type {
 const collectionsTable = tableRef('collections');
 const rulesTable = tableRef('serial_mapping_rules');
 const scansTable = tableRef('serial_scans');
+const linksTable = tableRef('sale_serial_links');
+
+// Promo windows are entered as local calendar dates.
+const PROMO_TIME_ZONE = 'America/Vancouver';
 
 const collectionFields = `
   id,
@@ -29,11 +35,14 @@ const collectionFields = `
   status,
   FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', starts_at) AS starts_at,
   FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', ends_at) AS ends_at,
+  FORMAT_DATE('%Y-%m-%d', DATE(starts_at, '${PROMO_TIME_ZONE}')) AS starts_on,
+  FORMAT_DATE('%Y-%m-%d', DATE(ends_at, '${PROMO_TIME_ZONE}')) AS ends_on,
   created_by,
   FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', created_at) AS created_at,
   FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', updated_at) AS updated_at,
   restricted_skus,
-  restricted_brands
+  restricted_brands,
+  shop_ids
 `;
 
 const ruleFields = `
@@ -93,6 +102,9 @@ export type CreateCollectionInput = {
   status?: CollectionStatus;
   restricted_skus?: string | null;
   restricted_brands?: string | null;
+  starts_on?: string | null;
+  ends_on?: string | null;
+  shop_ids?: string | null;
 };
 
 export type UpdateCollectionInput = Partial<
@@ -103,8 +115,18 @@ export type UpdateCollectionInput = Partial<
     | 'status'
     | 'restricted_skus'
     | 'restricted_brands'
+    | 'starts_on'
+    | 'ends_on'
+    | 'shop_ids'
   >
 >;
+
+// Local calendar dates become the first and last microsecond of those days.
+const startsAtExpression = `TIMESTAMP(DATE(NULLIF(@startsOn, '')), '${PROMO_TIME_ZONE}')`;
+const endsAtExpression = `TIMESTAMP_SUB(
+  TIMESTAMP(DATE_ADD(DATE(NULLIF(@endsOn, '')), INTERVAL 1 DAY), '${PROMO_TIME_ZONE}'),
+  INTERVAL 1 MICROSECOND
+)`;
 
 export type RuleInput = ProductAssignment & {
   match_type: MatchType;
@@ -143,12 +165,14 @@ export async function createCollection(
     `
       INSERT INTO ${collectionsTable} (
         id, name, brand, status, starts_at, ends_at, created_by,
-        created_at, updated_at, restricted_skus, restricted_brands
+        created_at, updated_at, restricted_skus, restricted_brands, shop_ids
       )
       VALUES (
-        @id, @name, NULLIF(@brand, ''), @status, NULL, NULL, @createdBy,
+        @id, @name, NULLIF(@brand, ''), @status, ${startsAtExpression},
+        ${endsAtExpression}, @createdBy,
         CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(),
-        NULLIF(@restrictedSkus, ''), NULLIF(@restrictedBrands, '')
+        NULLIF(@restrictedSkus, ''), NULLIF(@restrictedBrands, ''),
+        NULLIF(@shopIds, '')
       )
     `,
     {
@@ -159,6 +183,9 @@ export async function createCollection(
       createdBy,
       restrictedSkus: input.restricted_skus ?? '',
       restrictedBrands: input.restricted_brands ?? '',
+      startsOn: input.starts_on ?? '',
+      endsOn: input.ends_on ?? '',
+      shopIds: input.shop_ids ?? '',
     },
   );
 
@@ -195,6 +222,18 @@ export async function updateCollection(
   if (input.restricted_brands !== undefined) {
     assignments.push("restricted_brands = NULLIF(@restrictedBrands, '')");
     params.restrictedBrands = input.restricted_brands ?? '';
+  }
+  if (input.starts_on !== undefined) {
+    assignments.push(`starts_at = ${startsAtExpression}`);
+    params.startsOn = input.starts_on ?? '';
+  }
+  if (input.ends_on !== undefined) {
+    assignments.push(`ends_at = ${endsAtExpression}`);
+    params.endsOn = input.ends_on ?? '';
+  }
+  if (input.shop_ids !== undefined) {
+    assignments.push("shop_ids = NULLIF(@shopIds, '')");
+    params.shopIds = input.shop_ids ?? '';
   }
 
   if (assignments.length === 0) {
@@ -525,9 +564,14 @@ export async function createSerialScan(
     `
       MERGE ${scansTable} AS target
       USING (
-        SELECT @normalizedSerialNumber AS normalized_serial_number
+        SELECT
+          @normalizedSerialNumber AS normalized_serial_number,
+          @collectionId AS collection_id
       ) AS source
+      -- Serials are rescanned for every promo window, so a serial only has to
+      -- be unique within its collection.
       ON target.normalized_serial_number = source.normalized_serial_number
+        AND target.collection_id = source.collection_id
       WHEN NOT MATCHED THEN
         INSERT (
           id, collection_id, brand, vendor_id, vendor_name,
@@ -565,7 +609,7 @@ export async function createSerialScan(
 
   if (affected === 0) {
     throw new DatabaseRequestError(
-      'This serial number has already been scanned.',
+      'This serial number has already been scanned in this collection.',
       409,
       'DUPLICATE_SERIAL',
     );
@@ -576,7 +620,7 @@ export async function createSerialScan(
     // If DML statistics were unavailable, distinguish a duplicate from an
     // unexpected write failure by checking for the generated row.
     throw new DatabaseRequestError(
-      'This serial number has already been scanned.',
+      'This serial number has already been scanned in this collection.',
       409,
       'DUPLICATE_SERIAL',
     );
@@ -654,11 +698,118 @@ export async function manuallyAssignScan(
 }
 
 export async function deleteSerialScan(id: string) {
+  await executeDml(`DELETE FROM ${linksTable} WHERE scan_id = @id`, { id });
   const affected = await executeDml(
     `DELETE FROM ${scansTable} WHERE id = @id`,
     { id },
   );
   if (affected === 0) {
     throw new DatabaseRequestError('Scan not found.', 404, 'NOT_FOUND');
+  }
+}
+
+const linkFields = `
+  id,
+  collection_id,
+  scan_id,
+  sale_id,
+  sale_line_id,
+  unit_index,
+  link_method,
+  linked_by,
+  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', created_at) AS created_at
+`;
+
+export async function listLinks(collectionId: string) {
+  return queryRows<SaleSerialLink>(
+    `
+      SELECT ${linkFields}
+      FROM ${linksTable}
+      WHERE collection_id = @collectionId
+    `,
+    { collectionId },
+  );
+}
+
+export type NewLink = {
+  scan_id: string;
+  sale_id: number;
+  sale_line_id: number;
+  unit_index: number;
+};
+
+/**
+ * Inserts links, skipping any whose serial or sale unit is already linked in
+ * the collection. Returns the number of links written.
+ */
+export async function insertLinks(
+  collectionId: string,
+  links: NewLink[],
+  method: LinkMethod,
+  linkedBy: string,
+) {
+  if (links.length === 0) {
+    return 0;
+  }
+
+  const affected = await executeDml(
+    `
+      MERGE ${linksTable} AS target
+      USING (SELECT * FROM UNNEST(@links)) AS source
+      ON target.collection_id = @collectionId
+        AND (
+          target.scan_id = source.scan_id
+          OR (
+            target.sale_line_id = source.sale_line_id
+            AND target.unit_index = source.unit_index
+          )
+        )
+      WHEN NOT MATCHED THEN
+        INSERT (
+          id, collection_id, scan_id, sale_id, sale_line_id, unit_index,
+          link_method, linked_by, created_at
+        )
+        VALUES (
+          GENERATE_UUID(), @collectionId, source.scan_id, source.sale_id,
+          source.sale_line_id, source.unit_index, @method, @linkedBy,
+          CURRENT_TIMESTAMP()
+        )
+    `,
+    {
+      collectionId,
+      method,
+      linkedBy,
+      links: links.map((link) => ({
+        scan_id: link.scan_id,
+        sale_id: link.sale_id,
+        sale_line_id: link.sale_line_id,
+        unit_index: link.unit_index,
+      })),
+    },
+  );
+  return affected ?? links.length;
+}
+
+export async function deleteLinks(collectionId: string, ids: string[]) {
+  if (ids.length === 0) {
+    return 0;
+  }
+  const affected = await executeDml(
+    `
+      DELETE FROM ${linksTable}
+      WHERE collection_id = @collectionId AND id IN UNNEST(@ids)
+    `,
+    { collectionId, ids },
+  );
+  return affected ?? ids.length;
+}
+
+export async function deleteLink(id: string) {
+  const affected = await executeDml(
+    `DELETE FROM ${linksTable} WHERE id = @id`,
+    { id },
+  );
+  if (affected === 0) {
+    throw new DatabaseRequestError('Link not found.', 404, 'NOT_FOUND');
   }
 }

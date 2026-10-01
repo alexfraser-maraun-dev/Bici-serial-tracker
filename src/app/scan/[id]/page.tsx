@@ -122,7 +122,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       } : s));
     } catch (error) {
       if (error instanceof ApiClientError && error.code === 'DUPLICATE_SERIAL') {
-        setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: 'duplicate' as ScanRow['status'], product_description: 'Already scanned globally.' } : s));
+        setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: 'duplicate' as ScanRow['status'], product_description: 'Already scanned in this collection.' } : s));
       } else {
         const message = error instanceof Error ? error.message : 'Failed to save to database.';
         setScans(prev => prev.map(s => s.id === uiId ? { ...s, status: 'error' as ScanRow['status'], product_description: message } : s));

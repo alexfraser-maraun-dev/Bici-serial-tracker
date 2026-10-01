@@ -1,5 +1,6 @@
 import { getAuthenticatedEmail, apiError } from '@/lib/api-auth';
 import { listSerialScans } from '@/lib/bigquery-db';
+import { toCsv, type CsvColumn } from '@/lib/csv';
 
 export async function GET(
   _request: Request,
@@ -19,32 +20,17 @@ export async function GET(
     return apiError(error, 'Failed to fetch scans.');
   }
 
-  // Generate CSV
-  const columns = [
-    { key: 'brand', label: 'brand' },
-    { key: 'vendor_id', label: 'vendor ID' },
-    { key: 'product_description', label: 'product_description' },
-    { key: 'serial_number', label: 'serial_number' },
-    { key: 'qty_sold', label: 'qty_sold' },
-    { key: 'scanned_by', label: 'scanned_by' },
-    { key: 'scanned_at', label: 'scanned_at' },
+  const columns: CsvColumn<(typeof scans)[number]>[] = [
+    { label: 'brand', value: (scan) => scan.brand },
+    { label: 'vendor ID', value: (scan) => scan.vendor_id },
+    { label: 'product_description', value: (scan) => scan.product_description },
+    { label: 'serial_number', value: (scan) => scan.serial_number },
+    { label: 'qty_sold', value: (scan) => scan.qty_sold },
+    { label: 'scanned_by', value: (scan) => scan.scanned_by },
+    { label: 'scanned_at', value: (scan) => scan.scanned_at },
   ];
-  
-  const escapeCsv = (val: unknown) => {
-    if (val === null || val === undefined) return '';
-    const str = String(val);
-    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-      return `"${str.replace(/"/g, '""')}"`;
-    }
-    return str;
-  };
 
-  const csvHeaders = columns.map(col => col.label).join(',');
-  const rows = scans.map(scan => 
-    columns.map(col => escapeCsv(scan[col.key as keyof typeof scan])).join(',')
-  );
-
-  const csvContent = [csvHeaders, ...rows].join('\n');
+  const csvContent = toCsv(columns, scans);
 
   return new Response(csvContent, {
     status: 200,
