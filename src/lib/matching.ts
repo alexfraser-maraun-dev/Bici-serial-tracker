@@ -4,24 +4,29 @@ import type {
   ProductAssignment,
 } from '@/lib/types';
 
+// Serial numbers are case-insensitive, so they are stored and compared in
+// upper case.
 export function normalizeSerial(serial: string) {
-  return serial.trim().replace(/\r?\n|\r/g, '');
+  return serial.trim().replace(/\r?\n|\r/g, '').toUpperCase();
 }
 
 export function matchesRule(
   normalizedSerial: string,
   rule: Pick<MappingRuleRecord, 'match_type' | 'match_value'>,
 ) {
+  // Older scans and rules may be stored in mixed case.
+  const serial = normalizedSerial.toUpperCase();
+  const value = rule.match_value.toUpperCase();
   switch (rule.match_type) {
     case 'exact':
-      return normalizedSerial === rule.match_value;
+      return serial === value;
     case 'prefix':
-      return normalizedSerial.startsWith(rule.match_value);
+      return serial.startsWith(value);
     case 'contains':
-      return normalizedSerial.includes(rule.match_value);
+      return serial.includes(value);
     case 'regex':
       try {
-        return new RegExp(rule.match_value).test(normalizedSerial);
+        return new RegExp(rule.match_value, 'i').test(serial);
       } catch {
         return false;
       }

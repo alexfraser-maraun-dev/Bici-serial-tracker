@@ -46,7 +46,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         if (cancelled) return;
         setCollection(colData);
         existingScans.forEach(s =>
-          sessionScans.current.add(s.normalized_serial_number),
+          sessionScans.current.add(normalizeSerial(s.normalized_serial_number)),
         );
         setSessionScanCount(sessionScans.current.size);
       })

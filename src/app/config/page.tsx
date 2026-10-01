@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { apiJson } from '@/lib/api-client';
+import { matchesRule, normalizeSerial } from '@/lib/matching';
 import type { MappingRuleRecord, MatchType } from '@/lib/types';
 import { useSession } from 'next-auth/react';
 import { Search, Save, Settings2, ShieldCheck, AlertTriangle } from 'lucide-react';
@@ -177,15 +178,10 @@ export default function ConfigPage() {
     const finalMatchValue = getComputedMatchValue();
     if (!testSerial || !finalMatchValue) return;
     
-    let isMatch = false;
-    switch (matchType) {
-      case 'exact': isMatch = testSerial === finalMatchValue; break;
-      case 'prefix': isMatch = testSerial.startsWith(finalMatchValue); break;
-      case 'contains': isMatch = testSerial.includes(finalMatchValue); break;
-      case 'regex': 
-        try { isMatch = new RegExp(finalMatchValue).test(testSerial); } catch { isMatch = false; }
-        break;
-    }
+    const isMatch = matchesRule(normalizeSerial(testSerial), {
+      match_type: matchType,
+      match_value: finalMatchValue,
+    });
     setTestResult(isMatch ? 'match' : 'no-match');
   };
 

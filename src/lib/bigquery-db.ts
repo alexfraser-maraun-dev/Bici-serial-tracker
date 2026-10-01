@@ -424,8 +424,7 @@ type ReconciliationCandidate = {
   restricted_brands: string | null;
 };
 
-export async function reconcileUnmatchedScans(rule: MappingRuleRecord) {
-  const candidates = await queryRows<ReconciliationCandidate>(`
+const reconciliationCandidatesQuery = `
     SELECT
       scans.id,
       scans.normalized_serial_number,
@@ -435,7 +434,41 @@ export async function reconcileUnmatchedScans(rule: MappingRuleRecord) {
     INNER JOIN ${collectionsTable} AS collections
       ON collections.id = scans.collection_id
     WHERE scans.match_status = 'unmatched'
-  `);
+  `;
+
+/**
+ * Matches every unmatched scan against all active rules in priority order.
+ * Rules normally reconcile only when they are saved, so this catches scans
+ * left over from rule edits or matching fixes.
+ */
+export async function reconcileAllUnmatchedScans() {
+  const [candidates, rules] = await Promise.all([
+    queryRows<ReconciliationCandidate>(reconciliationCandidatesQuery),
+    listMappingRules(true),
+  ]);
+
+  const idsByRule = new Map<string, string[]>();
+  for (const scan of candidates) {
+    const rule = findMatchingRule(scan.normalized_serial_number, rules);
+    if (rule && !getRestrictionError(scan, rule)) {
+      idsByRule.set(rule.id, [...(idsByRule.get(rule.id) ?? []), scan.id]);
+    }
+  }
+
+  let reconciled = 0;
+  for (const rule of rules) {
+    const ids = idsByRule.get(rule.id);
+    if (ids) {
+      reconciled += await applyRuleToScans(rule, ids);
+    }
+  }
+  return reconciled;
+}
+
+export async function reconcileUnmatchedScans(rule: MappingRuleRecord) {
+  const candidates = await queryRows<ReconciliationCandidate>(
+    reconciliationCandidatesQuery,
+  );
 
   const eligibleIds = candidates
     .filter(
@@ -445,6 +478,13 @@ export async function reconcileUnmatchedScans(rule: MappingRuleRecord) {
     )
     .map((scan) => scan.id);
 
+  return applyRuleToScans(rule, eligibleIds);
+}
+
+async function applyRuleToScans(
+  rule: MappingRuleRecord,
+  eligibleIds: string[],
+) {
   if (eligibleIds.length === 0) {
     return 0;
   }
@@ -570,7 +610,7 @@ export async function createSerialScan(
       ) AS source
       -- Serials are rescanned for every promo window, so a serial only has to
       -- be unique within its collection.
-      ON target.normalized_serial_number = source.normalized_serial_number
+      ON UPPER(target.normalized_serial_number) = source.normalized_serial_number
         AND target.collection_id = source.collection_id
       WHEN NOT MATCHED THEN
         INSERT (

@@ -1,9 +1,12 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { apiJson } from '@/lib/api-client';
-import type { SerialScanRecord } from '@/lib/types';
-import { Edit2, CheckCircle2, Trash2 } from 'lucide-react';
+import { ApiClientError, apiJson } from '@/lib/api-client';
+import { findMatchingRule, normalizeSerial } from '@/lib/matching';
+import type { MappingRuleRecord, SerialScanRecord } from '@/lib/types';
+import { Edit2, CheckCircle2, Trash2, RefreshCw } from 'lucide-react';
+
+const DEFAULT_PREFIX_LENGTH = 3;
 
 type Scan = {
   id: string;
@@ -24,10 +27,57 @@ export default function UnmatchedPage() {
   const [upc, setUpc] = useState('');
   const [systemSku, setSystemSku] = useState('');
   const [manufacturerSku, setManufacturerSku] = useState('');
+  const [vendorName, setVendorName] = useState('');
+  const [saveRule, setSaveRule] = useState(true);
+  const [rulePrefix, setRulePrefix] = useState('');
+  const [rules, setRules] = useState<MappingRuleRecord[]>([]);
+  const [isReconciling, setIsReconciling] = useState(false);
 
   useEffect(() => {
     fetchUnmatched();
+    fetchRules();
   }, []);
+
+  async function fetchRules() {
+    try {
+      setRules(await apiJson<MappingRuleRecord[]>('/api/mapping-rules?active=true'));
+    } catch {
+      setRules([]);
+    }
+  }
+
+  const editingScan = unmatched.find(scan => scan.id === editingId) ?? null;
+  const existingRule = editingScan
+    ? findMatchingRule(normalizeSerial(editingScan.serial_number), rules)
+    : null;
+  const normalizedPrefix = normalizeSerial(rulePrefix);
+  const prefixMatchesSerial =
+    !!editingScan && !!normalizedPrefix &&
+    normalizeSerial(editingScan.serial_number).startsWith(normalizedPrefix);
+  const overlappingRules = normalizedPrefix
+    ? rules.filter(rule => {
+        if (rule.match_type !== 'prefix') return false;
+        const other = normalizeSerial(rule.match_value);
+        return other.startsWith(normalizedPrefix) || normalizedPrefix.startsWith(other);
+      })
+    : [];
+
+  const handleReconcile = async () => {
+    setIsReconciling(true);
+    try {
+      const result = await apiJson<{ reconciledCount: number }>('/api/scans/reconcile', { method: 'POST' });
+      alert(
+        result.reconciledCount > 0
+          ? `${result.reconciledCount} scan${result.reconciledCount === 1 ? '' : 's'} matched an existing rule.`
+          : 'No unmatched scans match an existing rule.',
+      );
+      fetchUnmatched();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to re-run mapping rules.');
+    } finally {
+      setIsReconciling(false);
+    }
+  };
 
   async function fetchUnmatched() {
     try {
@@ -49,6 +99,9 @@ export default function UnmatchedPage() {
     setUpc('');
     setSystemSku('');
     setManufacturerSku('');
+    setVendorName('');
+    setRulePrefix(normalizeSerial(scan.serial_number).slice(0, DEFAULT_PREFIX_LENGTH));
+    setSaveRule(!findMatchingRule(normalizeSerial(scan.serial_number), rules));
   };
 
   const handleUpcSearch = async () => {
@@ -66,6 +119,7 @@ export default function UnmatchedPage() {
           setProductDescription(data.product.product_description || '');
           setSystemSku(data.product.system_sku || '');
           setManufacturerSku(data.product.manufacturer_sku || '');
+          setVendorName(data.product.vendor_name || '');
         } else {
           alert('Product not found in BigQuery. Please enter details manually.');
         }
@@ -84,19 +138,58 @@ export default function UnmatchedPage() {
       alert('Product Description is required.');
       return;
     }
+    if (saveRule && !prefixMatchesSerial) {
+      alert('The rule prefix must match the start of this serial number.');
+      return;
+    }
+
+    const product = {
+      brand,
+      vendor_id: vendorId,
+      vendor_name: vendorName,
+      product_description: productDescription,
+      upc,
+      system_sku: systemSku,
+      manufacturer_sku: manufacturerSku,
+    };
 
     try {
-      await apiJson(`/api/scans/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          brand,
-          vendor_id: vendorId,
-          product_description: productDescription,
-          upc,
-          system_sku: systemSku,
-          manufacturer_sku: manufacturerSku,
-        }),
-      });
+      let reconciledCount = 0;
+      if (saveRule) {
+        // Saving the rule also matches existing unmatched scans, usually
+        // including this one.
+        const result = await apiJson<{ reconciledCount: number }>('/api/mapping-rules', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...product,
+            match_type: 'prefix',
+            match_value: normalizedPrefix,
+            priority: 10,
+            active: true,
+          }),
+        });
+        reconciledCount = result.reconciledCount;
+      }
+
+      try {
+        await apiJson(`/api/scans/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(product),
+        });
+      } catch (error) {
+        const matchedByRule =
+          saveRule && error instanceof ApiClientError && error.code === 'SCAN_ALREADY_ASSIGNED';
+        if (!matchedByRule) throw error;
+      }
+
+      if (saveRule) {
+        const others = Math.max(reconciledCount - 1, 0);
+        alert(
+          `Rule saved: serials starting with "${normalizedPrefix}" will match ${productDescription}.` +
+          (others > 0 ? ` ${others} other unmatched scan${others === 1 ? '' : 's'} also matched.` : ''),
+        );
+        fetchRules();
+      }
       setEditingId(null);
       fetchUnmatched();
     } catch (error) {
@@ -129,6 +222,9 @@ export default function UnmatchedPage() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h1>Unmatched Scans</h1>
+        <button onClick={handleReconcile} className="btn btn-outline" disabled={isReconciling || unmatched.length === 0} title="Match unmatched scans against the current mapping rules">
+          <RefreshCw size={16} style={{ marginRight: '0.5rem' }} /> {isReconciling ? 'Re-running...' : 'Re-run Rules'}
+        </button>
       </div>
 
       <div className="card">
@@ -181,6 +277,37 @@ export default function UnmatchedPage() {
                             </div>
                             <input className="input" placeholder="System SKU" value={systemSku} onChange={e => setSystemSku(e.target.value)} />
                             <input className="input" placeholder="Manufacturer SKU" value={manufacturerSku} onChange={e => setManufacturerSku(e.target.value)} />
+                          </div>
+                          <div className="mb-4" style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 'var(--radius)', backgroundColor: 'var(--surface)' }}>
+                            {existingRule && (
+                              <p className="text-sm mb-4" style={{ color: 'var(--warning)' }}>
+                                Existing rule &quot;{existingRule.product_description}&quot; ({existingRule.match_type}: <code>{existingRule.match_value}</code>) already matches this serial. Try <strong>Re-run Rules</strong> before creating another rule. It won&apos;t apply if the collection&apos;s restrictions block that product.
+                              </p>
+                            )}
+                            <label className="flex items-center gap-2 text-sm" style={{ cursor: 'pointer' }}>
+                              <input type="checkbox" style={{ width: 'auto' }} checked={saveRule} onChange={e => setSaveRule(e.target.checked)} />
+                              Also save a mapping rule so future serials starting with this prefix match automatically
+                            </label>
+                            {saveRule && (
+                              <div className="flex items-center gap-2 mt-4">
+                                <span className="text-sm text-muted">Starts with</span>
+                                <input
+                                  className="input"
+                                  style={{ width: '10rem', fontFamily: 'monospace', padding: '0.4rem 0.6rem' }}
+                                  value={rulePrefix}
+                                  onChange={e => setRulePrefix(e.target.value)}
+                                />
+                                {!prefixMatchesSerial && (
+                                  <span className="text-sm" style={{ color: 'var(--error)' }}>Must match the start of {scan.serial_number}</span>
+                                )}
+                              </div>
+                            )}
+                            {saveRule && overlappingRules.length > 0 && (
+                              <p className="text-sm mt-4" style={{ color: 'var(--warning)' }}>
+                                Overlaps with {overlappingRules.map(rule => `"${rule.product_description}" (${rule.match_value})`).join(', ')}. The rule saved first wins at equal priority.
+                              </p>
+                            )}
+                            <p className="text-sm text-muted mt-4">Serial matching ignores upper/lower case.</p>
                           </div>
                           <button onClick={() => handleSave(scan.id)} className="btn btn-primary">
                             <CheckCircle2 size={18} className="mr-2" /> Save Assignment
